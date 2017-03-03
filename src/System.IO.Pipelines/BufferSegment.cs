@@ -16,14 +16,14 @@ namespace System.IO.Pipelines
         /// the Start is guaranteed to be equal to 0. The value of Start may be assigned anywhere between 0 and
         /// Buffer.Length, and must be equal to or less than End.
         /// </summary>
-        public int Start;
+        public int Start { get; internal set; }
 
         /// <summary>
         /// The End represents the offset into Array where the range of "active" bytes ends. At the point when the block is leased
         /// the End is guaranteed to be equal to Start. The value of Start may be assigned anywhere between 0 and
         /// Buffer.Length, and must be equal to or less than End.
         /// </summary>
-        public int End;
+        public int End { get; internal set; }
 
         /// <summary>
         /// Reference to the next block of data when the overall "active" bytes spans multiple blocks. At the point when the block is
@@ -50,19 +50,51 @@ namespace System.IO.Pipelines
             _memory = _buffer.Memory;
         }
 
-        public BufferSegment(OwnedMemory<byte> buffer, int start, int end)
+        public BufferSegment(OwnedMemory<byte> buffer, int length)
         {
+            _buffer = buffer;
+            Start = 0;
+            End = length;
+
+            _buffer.AddReference();
+            _memory = _buffer.Memory;
+        }
+
+        internal BufferSegment(OwnedMemory<byte> buffer, int start, int end)
+        {
+            if (start > end)
+            {
+                ThrowOutOfBoundsException();
+            }
+
             _buffer = buffer;
             Start = start;
             End = end;
-            ReadOnly = true;
+
+            _buffer.AddReference();
+            _memory = _buffer.Memory;
+        }
+
+        public BufferSegment(OwnedMemory<byte> buffer, int start, int end, bool readOnly)
+        {
+            if (start > end)
+            {
+                ThrowOutOfBoundsException();
+            }
+
+            _buffer = buffer;
+            Start = start;
+            End = end;
+            ReadOnly = readOnly;
 
             // For unowned buffers, we need to make a copy here so that the caller can 
             // give up the give this buffer back to the caller
             var unowned = buffer as UnownedBuffer;
             if (unowned != null)
             {
-                _buffer = unowned.MakeCopy(start, end - start, out Start, out End);
+                _buffer = unowned.MakeCopy(start, end - start, out var newStart, out var newEnd);
+                Start = newStart;
+                End = newEnd;
             }
 
             _buffer.AddReference();
@@ -116,34 +148,99 @@ namespace System.IO.Pipelines
             return builder.ToString();
         }
 
+        internal static BufferSegment Clone(BufferSegment start, int index, int length, out BufferSegment lastSegment)
+        {
+            var remainingLength = length;
+            if (remainingLength <= 0)
+            {
+                ThrowOutOfBoundsException();
+            }
+
+            BufferSegment firstSegment;
+            if (remainingLength > 0)
+            {
+                var current = start;
+                var segmentLength = current.End - index;
+
+                // Skip empty segments
+                while (segmentLength == 0)
+                {
+                    current = current.Next;
+                    if (current == null)
+                    {
+                        ThrowOutOfBoundsException();
+                    }
+
+                    segmentLength = current.ReadableBytes;
+                    index = current.Start;
+                }
+
+                // Take max of requested length
+                if (segmentLength > remainingLength)
+                {
+                    segmentLength = remainingLength;
+                }
+
+                remainingLength -= segmentLength;
+                firstSegment = new BufferSegment(current._buffer, index, index + segmentLength, true);
+
+                lastSegment = firstSegment;
+
+                while (remainingLength > 0)
+                {
+                    current = current.Next;
+                    if (current == null)
+                    {
+                        ThrowOutOfBoundsException();
+                    }
+
+                    segmentLength = current.ReadableBytes;
+                    if (segmentLength == 0)
+                    {
+                        // Skip empty segments
+                        continue;
+                    }
+
+                    // Take max of requested length
+                    if (segmentLength > remainingLength)
+                    {
+                        segmentLength = remainingLength;
+                    }
+
+                    lastSegment.Next = new BufferSegment(current._buffer, current.Start, current.Start + segmentLength, true);
+                    remainingLength -= segmentLength;
+                    lastSegment = lastSegment.Next;
+                }
+            }
+            else
+            {
+                firstSegment = new BufferSegment(OwnerEmptyMemory.Shared, 0, 0, true);
+                lastSegment = firstSegment;
+            }
+
+            return firstSegment;
+        }
+
         public static BufferSegment Clone(ReadCursor beginBuffer, ReadCursor endBuffer, out BufferSegment lastSegment)
         {
-            var beginOrig = beginBuffer.Segment;
-            var endOrig = endBuffer.Segment;
+            var length = beginBuffer.GetLength(endBuffer);
+            return Clone(beginBuffer.Segment, beginBuffer.Index, length, out lastSegment);
+        }
 
-            if (beginOrig == endOrig)
-            {
-                lastSegment = new BufferSegment(beginOrig._buffer, beginBuffer.Index, endBuffer.Index);
-                return lastSegment;
-            }
+        internal class OwnerEmptyMemory : OwnedMemory<byte>
+        {
+            readonly static byte[] s_empty = new byte[0];
+            public readonly static OwnerEmptyMemory Shared = new OwnerEmptyMemory();
 
-            var beginClone = new BufferSegment(beginOrig._buffer, beginBuffer.Index, beginOrig.End);
-            var endClone = beginClone;
+            public OwnerEmptyMemory() : base(s_empty, 0, 0) { }
 
-            beginOrig = beginOrig.Next;
+            protected override void Dispose(bool disposing)
+            { }
+        }
 
-            while (beginOrig != endOrig)
-            {
-                endClone.Next = new BufferSegment(beginOrig._buffer, beginOrig.Start, beginOrig.End);
-
-                endClone = endClone.Next;
-                beginOrig = beginOrig.Next;
-            }
-
-            lastSegment = new BufferSegment(endOrig._buffer, endOrig.Start, endBuffer.Index);
-            endClone.Next = lastSegment;
-
-            return beginClone;
+        private static void ThrowOutOfBoundsException()
+        {
+            throw new IndexOutOfRangeException("Length is out of bounds");
         }
     }
 }

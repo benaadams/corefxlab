@@ -568,16 +568,14 @@ namespace System.IO.Pipelines.Tests
         public void ReadCursorSeekChecksEndIfNotTrustingEnd()
         {
             var buffer = BufferUtilities.CreateBuffer(1, 1, 1);
-            var buffer2 = BufferUtilities.CreateBuffer(1, 1, 1);
-            Assert.Throws<InvalidOperationException>(() => buffer.Start.Seek(2, buffer2.End, true));
+            Assert.Throws<InvalidOperationException>(() => buffer.Start.Seek(2, 1));
         }
 
         [Fact]
         public void ReadCursorSeekDoesNotCheckEndIfTrustingEnd()
         {
             var buffer = BufferUtilities.CreateBuffer(1, 1, 1);
-            var buffer2 = BufferUtilities.CreateBuffer(1, 1, 1);
-            buffer.Start.Seek(2, buffer2.End, false);
+            buffer.Start.Seek(2, -1);
         }
 
         public static TheoryData<ReadableBuffer> Size100ReadableBuffers

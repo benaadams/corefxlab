@@ -11,18 +11,16 @@ namespace System.IO.Pipelines
         private BufferSegment _segment;
         private SegmentPart _current;
         private int _startIndex;
-        private readonly int _endIndex;
-        private readonly BufferSegment _endSegment;
+        private int _remainingLength;
 
         /// <summary>
         /// 
         /// </summary>
-        public SegmentEnumerator(ReadCursor start, ReadCursor end)
+        public SegmentEnumerator(ReadCursor start, int length)
         {
             _startIndex = start.Index;
             _segment = start.Segment;
-            _endSegment = end.Segment;
-            _endIndex = end.Index;
+            _remainingLength = length;
             _current = default(SegmentPart);
         }
 
@@ -48,9 +46,10 @@ namespace System.IO.Pipelines
             var start = _startIndex;
             var end = segment.End;
 
-            if (segment == _endSegment)
+            if ((uint)(end - start) >= (uint)_remainingLength)
             {
-                end = _endIndex;
+                end = start + _remainingLength;
+                _remainingLength = 0;
                 _segment = null;
             }
             else
@@ -58,13 +57,21 @@ namespace System.IO.Pipelines
                 _segment = segment.Next;
                 if (_segment == null)
                 {
-                    if (_endSegment != null)
+                    if (_remainingLength == -1)
+                    {
+                        _segment = null;
+                    }
+                    else
                     {
                         ThrowEndNotSeen();
                     }
                 }
                 else
                 {
+                    if (_remainingLength != -1)
+                    {
+                        _remainingLength -= end - start;
+                    }
                     _startIndex = _segment.Start;
                 }
             }
@@ -87,14 +94,6 @@ namespace System.IO.Pipelines
         public SegmentEnumerator GetEnumerator()
         {
             return this;
-        }
-
-        /// <summary>
-        /// 
-        /// </summary>
-        public void Reset()
-        {
-            ThrowHelper.ThrowNotSupportedException();
         }
 
         internal struct SegmentPart

@@ -24,7 +24,7 @@ namespace System.IO.Pipelines
             _end = false;
             _index = 0;
             _overallIndex = 0;
-            _enumerator = new SegmentEnumerator(start, end);
+            _enumerator = new SegmentEnumerator(start, start.GetLength(end));
             _currentSpan = default(Span<byte>);
             MoveNext();
         }

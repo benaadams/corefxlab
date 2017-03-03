@@ -11,10 +11,12 @@ namespace System.IO.Pipelines
     public struct PreservedBuffer : IDisposable
     {
         private ReadableBuffer _buffer;
+        private BufferSegment _endSegment;
 
         internal PreservedBuffer(ref ReadableBuffer buffer)
         {
             _buffer = buffer;
+            _endSegment = buffer.Start.GetSegmentAtLength(buffer.Length);
         }
 
         /// <summary>
@@ -28,7 +30,7 @@ namespace System.IO.Pipelines
         public void Dispose()
         {
             var returnStart = _buffer.Start.Segment;
-            var returnEnd = _buffer.End.Segment;
+            var returnEnd = _endSegment;
 
             while (true)
             {

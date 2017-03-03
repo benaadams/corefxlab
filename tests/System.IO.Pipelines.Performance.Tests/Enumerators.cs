@@ -35,7 +35,7 @@ namespace System.IO.Pipelines.Performance.Tests
         {
             for (int i = 0; i < InnerLoopCount; i++)
             {
-                var enumerator = new SegmentEnumerator(_readableBuffer.Start, _readableBuffer.End);
+                var enumerator = new SegmentEnumerator(_readableBuffer.Start, _readableBuffer.Length);
                 while (enumerator.MoveNext())
                 {
                     var segmentPart = enumerator.Current;

@@ -75,6 +75,10 @@ namespace System.IO.Pipelines
             {
                 return 0;
             }
+            if (end._index > end._segment.End)
+            {
+                ThrowOutOfBoundsException();
+            }
             return GetLength(_segment, _index, end._segment, end._index);
         }
 
@@ -82,22 +86,22 @@ namespace System.IO.Pipelines
         {
             var segment = start;
             var index = startIndex;
-            var length = 0;
+            var length = 0u;
             checked
             {
                 while (true)
                 {
                     if (segment == end)
                     {
-                        return length + endIndex - index;
+                        return (int)(length + (uint)endIndex - (uint)index);
                     }
                     else if (segment.Next == null)
                     {
-                        return length;
+                        ThrowOutOfBoundsException();
                     }
                     else
                     {
-                        length += segment.End - index;
+                        length += (uint)segment.End - (uint)index;
                         segment = segment.Next;
                         index = segment.Start;
                     }
@@ -105,33 +109,34 @@ namespace System.IO.Pipelines
             }
         }
 
-        internal ReadCursor Seek(int bytes, ReadCursor end, bool checkEndReachable = true)
+        internal ReadCursor Seek(int bytes, int maxLength)
         {
             if (IsEnd)
             {
                 return this;
             }
 
+            var segment = _segment;
             ReadCursor cursor;
-            if (_segment == end._segment && end._index - _index >= bytes)
+            if (segment.End - _index >= bytes)
             {
-                cursor = new ReadCursor(Segment, _index + bytes);
+                cursor = new ReadCursor(segment, _index + bytes);
             }
             else
             {
-                cursor = SeekMultiSegment(bytes, end, checkEndReachable);
+                cursor = SeekMultiSegment(bytes, maxLength);
             }
 
             return cursor;
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        private ReadCursor SeekMultiSegment(int bytes, ReadCursor end, bool checkEndReachable)
+        private ReadCursor SeekMultiSegment(int bytes, int maxLength)
         {
             ReadCursor result = default(ReadCursor);
             bool foundResult = false;
 
-            foreach (var segmentPart in new SegmentEnumerator(this, end))
+            foreach (var segmentPart in new SegmentEnumerator(this, maxLength))
             {
                 // We need to loop up until the end to make sure start and end are connected
                 // if end is not trusted
@@ -141,10 +146,6 @@ namespace System.IO.Pipelines
                     {
                         result = new ReadCursor(segmentPart.Segment, segmentPart.Start + bytes);
                         foundResult = true;
-                        if (!checkEndReachable)
-                        {
-                            break;
-                        }
                     }
                     else
                     {
@@ -315,6 +316,70 @@ namespace System.IO.Pipelines
                 current = current.Next;
             }
             return false;
+        }
+
+        internal bool IsReachable(int length)
+        {
+            var segment = _segment;
+            if (segment.End - segment.Start >= length)
+            {
+                return true;
+            }
+
+            return IsReachableMultiBlock(length);
+        }
+
+        private bool IsReachableMultiBlock(int length)
+        {
+            var current = _segment;
+            do
+            {
+                if (current == null)
+                {
+                    return false;
+                }
+                var segementLength = current.End - current.Start;
+                if (segementLength >= length)
+                {
+                    return true;
+                }
+
+                length -= segementLength;
+                current = current.Next;
+            } while (true);
+        }
+
+        internal BufferSegment GetSegmentAtLength(int length)
+        {
+            var segment = _segment;
+            if (segment.End - segment.Start >= length)
+            {
+                return segment;
+            }
+
+            return GetSegmentAtLengthMultiBlock(length);
+        }
+
+        private BufferSegment GetSegmentAtLengthMultiBlock(int length)
+        {
+            var current = _segment;
+            do
+            {
+                if (current == null)
+                {
+                    ThrowOutOfBoundsException();
+                }
+                var segementLength = current.End - current.Start;
+                if (segementLength >= length)
+                {
+                    break;
+                }
+
+                length -= segementLength;
+                current = current.Next;
+            } while (true);
+
+            return current;
         }
     }
 }

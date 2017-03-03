@@ -16,7 +16,13 @@ namespace System.IO.Pipelines
         /// </summary>
         public MemoryEnumerator(ReadCursor start, ReadCursor end)
         {
-            _segmentEnumerator = new SegmentEnumerator(start, end);
+            _segmentEnumerator = new SegmentEnumerator(start, start.GetLength(end));
+            _current = default(Memory<byte>);
+        }
+
+        public MemoryEnumerator(ReadCursor start, int length)
+        {
+            _segmentEnumerator = new SegmentEnumerator(start, length);
             _current = default(Memory<byte>);
         }
 

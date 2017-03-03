@@ -10,7 +10,7 @@ namespace System.IO.Pipelines
     {
         public static int Seek(ReadCursor begin, ReadCursor end, out ReadCursor result, byte byte0)
         {
-            var enumerator = new SegmentEnumerator(begin, end);
+            var enumerator = new SegmentEnumerator(begin, begin.GetLength(end));
             while (enumerator.MoveNext())
             {
                 var segmentPart = enumerator.Current;
@@ -31,7 +31,7 @@ namespace System.IO.Pipelines
 
         public static int Seek(ReadCursor begin, ReadCursor end, out ReadCursor result, byte byte0, byte byte1)
         {
-            var enumerator = new SegmentEnumerator(begin, end);
+            var enumerator = new SegmentEnumerator(begin, begin.GetLength(end));
             while (enumerator.MoveNext())
             {
                 var segmentPart = enumerator.Current;
@@ -55,7 +55,7 @@ namespace System.IO.Pipelines
 
         public static int Seek(ReadCursor begin, ReadCursor end, out ReadCursor result, byte byte0, byte byte1, byte byte2)
         {
-            var enumerator = new SegmentEnumerator(begin, end);
+            var enumerator = new SegmentEnumerator(begin, begin.GetLength(end));
             while (enumerator.MoveNext())
             {
                 var segmentPart = enumerator.Current;

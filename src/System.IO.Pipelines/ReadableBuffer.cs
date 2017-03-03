@@ -15,70 +15,100 @@ namespace System.IO.Pipelines
     {
         private static readonly int VectorWidth = Vector<byte>.Count;
 
-        private Memory<byte> _first;
-
-        private ReadCursor _start;
-        private ReadCursor _end;
+        private BufferSegment _segment;
+        private int _index;
         private int _length;
 
         /// <summary>
         /// Length of the <see cref="ReadableBuffer"/> in bytes.
         /// </summary>
-        public int Length => _length >= 0 ? _length : GetLength();
+        public int Length => _length;
 
-        int? ISequence<ReadOnlyMemory<byte>>.Length => Length;
+        int? ISequence<ReadOnlyMemory<byte>>.Length => _length;
 
         /// <summary>
         /// Determines if the <see cref="ReadableBuffer"/> is empty.
         /// </summary>
-        public bool IsEmpty => _first.IsEmpty && Length == 0;
+        public bool IsEmpty => _length == 0;
 
         /// <summary>
         /// Determins if the <see cref="ReadableBuffer"/> is a single <see cref="Memory{Byte}"/>.
         /// </summary>
-        public bool IsSingleSpan => _start.Segment == _end.Segment;
-
-        /// <summary>
-        /// The first <see cref="Memory{Byte}"/> in the <see cref="ReadableBuffer"/>.
-        /// </summary>
-        public Memory<byte> First => _first;
+        public bool IsSingleSpan => _segment.End - _index >= Length;
 
         /// <summary>
         /// A cursor to the start of the <see cref="ReadableBuffer"/>.
         /// </summary>
-        public ReadCursor Start => _start;
+        public ReadCursor Start => new ReadCursor(_segment, _index);
 
         /// <summary>
-        /// A cursor to the end of the <see cref="ReadableBuffer"/>
+        /// A cursor to the start of the <see cref="ReadableBuffer"/>.
         /// </summary>
-        public ReadCursor End => _end;
+        public Memory<byte> First
+        {
+            get
+            {
+                var segment = _segment;
+                if (segment == null || _length == 0)
+                {
+                    return Memory<byte>.Empty;
+                }
+                var segmentLength = segment.End - _index;
+                if (segmentLength > 0)
+                {
+                    return segment.Memory.Slice(_index, Math.Min(segmentLength, _length));
+                }
+                else
+                {
+                    segment = segment.Next;
+                    do
+                    {
+                        if (segment == null)
+                        {
+                            ThrowOutOfBoundsException();
+                        }
+                        segmentLength = segment.ReadableBytes;
+                        if (segmentLength > 0)
+                        {
+                            return segment.Memory.Slice(segment.Start, Math.Min(segmentLength, _length));
+                        }
+
+                        segment = segment.Next;
+                    } while (true);
+                }
+            }
+        }
+
+        /// <summary>
+        /// A cursor to the start of the <see cref="ReadableBuffer"/>.
+        /// </summary>
+        public ReadCursor End => _segment == null ? default(ReadCursor) : Start.Seek(_length, -1);
 
         internal ReadableBuffer(ReadCursor start, ReadCursor end)
         {
-            _start = start;
-            _end = end;
-            start.TryGetBuffer(end, out _first);
-            _length = -1;
+            _segment = start.Segment;
+            _index = start.Index;
+            _length = start.GetLength(end);
+        }
+
+        private ReadableBuffer(BufferSegment segment, int index, int length)
+        {
+            _segment = segment;
+            _index = index;
+            _length = length;
         }
 
         private ReadableBuffer(ref ReadableBuffer buffer)
         {
-            var begin = buffer._start;
-            var end = buffer._end;
-
-            BufferSegment segmentTail;
-            var segmentHead = BufferSegment.Clone(begin, end, out segmentTail);
-
-            begin = new ReadCursor(segmentHead);
-            end = new ReadCursor(segmentTail, segmentTail.End);
-
-            _start = begin;
-            _end = end;
-
-            _length = buffer._length;
-
-            begin.TryGetBuffer(end, out _first);
+            var index = buffer._index;
+            var length = buffer._length;
+            _segment = BufferSegment.Clone(buffer._segment, index, length, out var lastSegment);
+            _index = index;
+            _length = length;
         }
+
+        internal BufferSegment CloneSegments(out BufferSegment lastSegment)
+            => BufferSegment.Clone(_segment, _index, _length, out lastSegment);
 
         /// <summary>
         /// Searches for 2 sequential bytes in the <see cref="ReadableBuffer"/> and returns a sliced <see cref="ReadableBuffer"/> that
@@ -124,7 +154,7 @@ namespace System.IO.Pipelines
 
                 if (buffer.StartsWith(span))
                 {
-                    slice = Slice(_start, cursor);
+                    slice = Slice(0, cursor);
                     result = true;
                     break;
                 }
@@ -201,8 +231,8 @@ namespace System.IO.Pipelines
 
                 if (found)
                 {
-                    cursor = _start.Seek(seek, _end);
-                    slice = Slice(_start, cursor);
+                    cursor = Start.Seek(seek, Length);
+                    slice = Slice(0, cursor);
                     return true;
                 }
             }
@@ -218,10 +248,20 @@ namespace System.IO.Pipelines
         /// <param name="start">The index at which to begin this slice.</param>
         /// <param name="length">The length of the slice</param>
         public ReadableBuffer Slice(int start, int length)
-        {
-            var begin = _start.Seek(start, _end, false);
-            var end = begin.Seek(length, _end, false);
-            return Slice(begin, end);
+        {   
+            // Negative values discovered though conversion to high values when converted to unsigned
+            if ((uint)start > (uint)_length || (uint)length > (uint)(_length - start))
+            {
+                ThrowOutOfBoundsException();
+            }
+
+            if (start == 0)
+            {
+                return new ReadableBuffer(_segment, _index, length);
+            }
+
+            var newStart = Start.Seek(start, -1);
+            return new ReadableBuffer(newStart.Segment, newStart.Index, length);
         }
 
         /// <summary>
@@ -231,9 +271,7 @@ namespace System.IO.Pipelines
         /// <param name="end">The end (inclusive) of the slice</param>
         public ReadableBuffer Slice(int start, ReadCursor end)
         {
-            _end.BoundsCheck(end);
-            var begin = _start.Seek(start, end);
-            return Slice(begin, end);
+            return Slice(start, Start.GetLength(end));
         }
 
         /// <summary>
@@ -243,10 +281,9 @@ namespace System.IO.Pipelines
         /// <param name="end">The ending (inclusive) <see cref="ReadCursor"/> of the slice</param>
         public ReadableBuffer Slice(ReadCursor start, ReadCursor end)
         {
-            _end.BoundsCheck(end);
-            end.BoundsCheck(start);
-
-            return new ReadableBuffer(start, end);
+            var currentStart = Start;
+            var offset = currentStart.GetLength(start);
+            return Slice(offset, currentStart.GetLength(end) - offset);
         }
 
         /// <summary>
@@ -256,11 +293,7 @@ namespace System.IO.Pipelines
         /// <param name="length">The length of the slice</param>
         public ReadableBuffer Slice(ReadCursor start, int length)
         {
-            _end.BoundsCheck(start);
-
-            var end = start.Seek(length, _end, false);
-
-            return Slice(start, end);
+            return Slice(Start.GetLength(start), length);
         }
 
         /// <summary>
@@ -269,9 +302,8 @@ namespace System.IO.Pipelines
         /// <param name="start">The starting (inclusive) <see cref="ReadCursor"/> at which to begin this slice.</param>
         public ReadableBuffer Slice(ReadCursor start)
         {
-            _end.BoundsCheck(start);
-
-            return new ReadableBuffer(start, _end);
+            var offset = Start.GetLength(start);
+            return Slice(offset, _length - offset);
         }
 
         /// <summary>
@@ -280,10 +312,16 @@ namespace System.IO.Pipelines
         /// <param name="start">The start index at which to begin this slice.</param>
         public ReadableBuffer Slice(int start)
         {
+            // Negative values discovered though conversion to high values when converted to unsigned
+            if ((uint)start > (uint)_length)
+            {
+                ThrowOutOfBoundsException();
+            }
+
             if (start == 0) return this;
 
-            var begin = _start.Seek(start, _end, false);
-            return new ReadableBuffer(begin, _end);
+            var newStart = Start.Seek(start, -1);
+            return new ReadableBuffer(newStart.Segment, newStart.Index, _length - start);
         }
 
         /// <summary>
@@ -297,8 +335,7 @@ namespace System.IO.Pipelines
                 return -1;
             }
 
-            var span = First.Span;
-            return span[0];
+            return First.Span[_index];
         }
 
         /// <summary>
@@ -339,14 +376,6 @@ namespace System.IO.Pipelines
             return buffer;
         }
 
-        private int GetLength()
-        {
-            var begin = _start;
-            var length = begin.GetLength(_end);
-            _length = length;
-            return length;
-        }
-
         /// <summary>
         ///
         /// </summary>
@@ -366,7 +395,7 @@ namespace System.IO.Pipelines
         /// </summary>
         public MemoryEnumerator GetEnumerator()
         {
-            return new MemoryEnumerator(_start, _end);
+            return new MemoryEnumerator(Start, _length);
         }
 
         /// <summary>
@@ -417,8 +446,9 @@ namespace System.IO.Pipelines
 
         internal void ClearCursors()
         {
-            _start = default(ReadCursor);
-            _end = default(ReadCursor);
+            _index = 0;
+            _length = 0;
+            _segment = null;
         }
 
         /// <summary>
@@ -506,16 +536,14 @@ namespace System.IO.Pipelines
                 ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument.offset);
             }
 
-            if (length < 0 || (offset + length) > data.Length)
+            if (length < 0 || length > data.Length - offset)
             {
                 ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument.length);
             }
 
             var buffer = new OwnedArray<byte>(data);
-            var segment = new BufferSegment(buffer);
-            segment.Start = offset;
-            segment.End = offset + length;
-            return new ReadableBuffer(new ReadCursor(segment, offset), new ReadCursor(segment, offset + length));
+            var segment = new BufferSegment(buffer, offset, offset + length);
+            return new ReadableBuffer(segment, offset, length);
         }
 
         bool ISequence<ReadOnlyMemory<byte>>.TryGet(ref Position position, out ReadOnlyMemory<byte> item, bool advance)
@@ -526,13 +554,13 @@ namespace System.IO.Pipelines
                 item = First;
                 if (advance)
                 {
-                    if (_start.IsEnd)
+                    if (Start.IsEnd)
                     {
                         position = Position.AfterLast;
                     }
                     else
                     {
-                        position.ObjectPosition = _start.Segment.Next;
+                        position.ObjectPosition = _segment.Next;
                     }
                 }
                 return true;
@@ -552,9 +580,9 @@ namespace System.IO.Pipelines
                     position = Position.AfterLast;
                 }
             }
-            if (currentSegment == _end.Segment)
+            if (currentSegment == _segment)
             {
-                item = currentSegment.Memory.Slice(currentSegment.Start, _end.Index - currentSegment.Start);
+                item = currentSegment.Memory.Slice(_index, _length);
             }
             else
             {
@@ -569,7 +597,12 @@ namespace System.IO.Pipelines
             {
                 throw new ArgumentOutOfRangeException(nameof(count));
             }
-            return cursor.Seek(count, _end, false);
+            return cursor.Seek(count, -1);
+        }
+
+        private static void ThrowOutOfBoundsException()
+        {
+            throw new InvalidOperationException("Length is out of bounds");
         }
     }
 }

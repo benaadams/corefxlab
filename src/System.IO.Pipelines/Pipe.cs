@@ -205,7 +205,7 @@ namespace System.IO.Pipelines
             EnsureAlloc();
 
             BufferSegment clonedEnd;
-            var clonedBegin = BufferSegment.Clone(buffer.Start, buffer.End, out clonedEnd);
+            var clonedBegin = buffer.CloneSegments(out clonedEnd);
 
             if (_writingHead == null)
             {

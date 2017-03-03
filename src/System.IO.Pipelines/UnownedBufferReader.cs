@@ -117,10 +117,8 @@ namespace System.IO.Pipelines
                 cancellationToken.ThrowIfCancellationRequested();
 
                 // Allocate a new segment to hold the buffer being written.
-                using (var segment = new BufferSegment(buffer))
+                using (var segment = new BufferSegment(buffer, buffer.Memory.Length))
                 {
-                    segment.End = buffer.Memory.Length;
-
                     if (_head == null || _head.ReadableBytes == 0)
                     {
                         // Update the head to point to the head of the buffer.
